@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -7,31 +8,39 @@ using Telegram.Bot;
 
 namespace TelegaBotService
 {
-    public static class MessageManager
+    public class MessageManager
     {
-        private static Dictionary<long, int> _userIdToLastUserMessageId = [];
-        private static Dictionary<long, int> _userMessageIdToBotMessageId = [];
+        private ConcurrentDictionary<long, ConcurrentQueue<int>> _userIdToLastMessagesId = [];
+        private LinkedList<int> _ignoredMessages = [];
+        private long _chatId;
+        private ITelegramBotClient _botClient;
 
-        private static async Task RemoveMessage(ITelegramBotClient BotClient, long ChatId, long UserId, int MessageId, CancellationToken CancellationToken)
+        public MessageManager(ITelegramBotClient BotClient, long ChatId)
         {
-            await BotClient.DeleteMessage(ChatId, MessageId, CancellationToken);
-            if(_userMessageIdToBotMessageId.TryGetValue(UserId, out int botMessageId))
-                await BotClient.DeleteMessage(ChatId, botMessageId, CancellationToken);
+            _botClient = BotClient;
+            _chatId = ChatId;
         }
 
-        public static async Task SetMessageIdAndRemovePrevious(
-            ITelegramBotClient BotClient,
-            long ChatId, 
-            long UserId,
-            int UserMessageId, 
-            int BotMessageId, 
-            CancellationToken CancellationToken)
+        public async Task RemoveMessages(long UserId, CancellationToken CancellationToken)
         {
-            if (_userIdToLastUserMessageId.TryGetValue(UserId, out int messageId))
-                await RemoveMessage(BotClient, ChatId, UserId, messageId, CancellationToken);
-
-            _userIdToLastUserMessageId[UserId] = UserMessageId;
-            _userMessageIdToBotMessageId[UserMessageId] = BotMessageId;
+            if (_userIdToLastMessagesId.TryGetValue(UserId, out var messagesId))
+            {
+                if (!messagesId.IsEmpty)
+                {
+                    await _botClient.DeleteMessages(_chatId, messagesId, CancellationToken);
+                    messagesId.Clear();
+                }
+            }
         }
+
+        public async Task AddMessageId(long UserId, int MessageId)
+        {
+            if (!_userIdToLastMessagesId.ContainsKey(UserId))
+                _userIdToLastMessagesId[UserId] = [];
+            if (!_ignoredMessages.Contains(MessageId))
+                _userIdToLastMessagesId[UserId].Enqueue(MessageId);
+        }
+
+        public void AddIgnoredMessageId(int MessageId) => _ignoredMessages.AddLast(MessageId);
     }
 }

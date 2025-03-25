@@ -15,13 +15,16 @@ namespace TelegaBotService
         private readonly ILogger<TelegramBotBackgroundService> _logger;
         private readonly ITelegramBotClient _botClient;
         private Dictionary<long, TaskTemplate> _taskHolder = [];
-
+        private MessageManager _messageManager;
+        private IServiceProvider _serviceProvider;
         public TelegramBotBackgroundService(
             ITelegramBotClient BotClient,
-            ILogger<TelegramBotBackgroundService> Logger)
+            ILogger<TelegramBotBackgroundService> Logger,
+            IServiceProvider ServiceProvider)
         {
             _botClient = BotClient;
             _logger = Logger;
+            _serviceProvider = ServiceProvider;
             SetBotCommands();
         }
 
@@ -66,10 +69,17 @@ namespace TelegaBotService
 
             if (Message.Text is not { } messageText)
                 return;
-            
+
+            if (_messageManager == null)
+                _messageManager = new(_botClient, Message.Chat.Id);
+
+            _messageManager.AddMessageId(Message.From.Id, Message.Id);
+
             switch (messageText)
             {
                 case "/new":
+                    _taskHolder[userId] = new TaskTemplate();
+                    await _messageManager.RemoveMessages(Message.From.Id, CancellationToken);
                     await SendDateMenu(Message, CancellationToken);
                     break;
                 case "/clear":
@@ -81,17 +91,21 @@ namespace TelegaBotService
             {
                 TaskDataState.AskedTaskType => SaveDescriptionAndAskLocation(Message, CancellationToken),
                 TaskDataState.AskedTaskDescription => SaveLocationAndAskPerformers(Message.From.Id, Message.From.Username, messageText, CancellationToken),
-                TaskDataState.AskedExecutorName => SaveDataToDbAndSendTaskDescription(),
                 _ => Task.CompletedTask
             };
 
             await task;
-
         }
 
         private async Task CallbackQueryHandler(CallbackQuery Query, CancellationToken CancellationToken)
         {
-            if(_taskHolder.TryGetValue(Query.From.Id, value: out TaskTemplate taskTemplate))
+            if (Query == null) return;
+
+            if (_messageManager == null)
+                _messageManager = new(_botClient, Query.Message.Chat.Id);
+            _messageManager.AddMessageId(Query.From.Id, Query.Message.Id);
+
+            if (_taskHolder.TryGetValue(Query.From.Id, value: out TaskTemplate taskTemplate))
             {
                 var task = taskTemplate.State switch
                 {
@@ -117,11 +131,6 @@ namespace TelegaBotService
                 replyMarkup: Keyboard.GetKeyboard(KeyboardType.Date),
                 cancellationToken: CancellationToken
             );
-            //await MessageManager.SetMessageIdAndRemovePrevious(
-            //    _botClient,
-            //    Message.Chat.Id, Message.From.Id,
-            //    Message.Id, botMessage.Id,
-            //    CancellationToken);
         }
 
         private async Task SaveDateAndAskTaskType(CallbackQuery Query, CancellationToken CancellationToken)
@@ -130,17 +139,13 @@ namespace TelegaBotService
             taskTemplate.Date = Query.Data;
             taskTemplate.State = TaskDataState.AskedDate;
 
+            await _messageManager.RemoveMessages(Query.From.Id,CancellationToken);
+
             var botMessage = await _botClient.SendMessage(
                 chatId: Query.Message.Chat.Id,
                 text: $"@{Query.From.Username} Выберите тип работ:",
                 replyMarkup: Keyboard.GetKeyboard(KeyboardType.TasksType),
                 cancellationToken: CancellationToken);
-
-            //await MessageManager.SetMessageIdAndRemovePrevious(
-            //    _botClient,
-            //    Query.Message.Chat.Id, Query.Message.From.Id,
-            //    Query.Message.Id, botMessage.Id,
-            //    CancellationToken);
         }
 
         private async Task SaveTaskTypeAndAskDescription(CallbackQuery Query, CancellationToken CancellationToken)
@@ -149,16 +154,13 @@ namespace TelegaBotService
             taskTemplate.TaskType = Query.Data;
             taskTemplate.State = TaskDataState.AskedTaskType;
 
+            await _messageManager.RemoveMessages(Query.From.Id, CancellationToken);
+
             var botMessage = await _botClient.SendMessage(
                 chatId: Query.Message.Chat.Id,
                 text: $"@{Query.From.Username} Опишите выполненные работы:",
                 cancellationToken: CancellationToken);
-
-            //await MessageManager.SetMessageIdAndRemovePrevious(
-            //    _botClient,
-            //    Query.Message.Chat.Id, Query.Message.From.Id,
-            //    Query.Message.Id, botMessage.Id,
-            //    CancellationToken);
+            _messageManager.AddMessageId(Query.From.Id, botMessage.Id);
         }
 
         private async Task SaveDescriptionAndAskLocation(Message Message, CancellationToken CancellationToken)
@@ -167,26 +169,31 @@ namespace TelegaBotService
             taskTemplate.TaskDescription = Message.Text;
             taskTemplate.State = TaskDataState.AskedTaskDescription;
 
-            await _botClient.SendMessage(
+            await _messageManager.RemoveMessages(Message.From.Id, CancellationToken);
+
+            var message = await _botClient.SendMessage(
                 chatId: Message.Chat.Id,
                 text: $"@{Message.From.Username} Выберите место проведения работ:",
                 replyMarkup: Keyboard.GetKeyboard(KeyboardType.Locations),
                 cancellationToken: CancellationToken);
-
         }
 
         private async Task TrySaveLocation(CallbackQuery Query, CancellationToken CancellationToken)
         {
+            await _messageManager.RemoveMessages(Query.From.Id, CancellationToken);
+
             if (Query.Data != "location")
             {
                 await SaveLocationAndAskPerformers(Query.From.Id, Query.From.Username, Query.Data, CancellationToken);
                 return;
             }
-
-            await _botClient.SendMessage(
-                chatId: Query.From.Id,
-                text: $"@{Query.From.Username} Введите место проведения работ:",
-                cancellationToken: CancellationToken);
+            else
+            {
+                var message = await _botClient.SendMessage(
+                    chatId: Query.From.Id,
+                    text: $"@{Query.From.Username} Введите место проведения работ:",
+                    cancellationToken: CancellationToken);
+            }
         }
 
         private async Task SaveLocationAndAskPerformers(long Id, string Username, string location, CancellationToken CancellationToken)
@@ -203,14 +210,9 @@ namespace TelegaBotService
             var taskTemplate = _taskHolder[Query.From.Id];
             var message = Query.Data;
             taskTemplate.State = message == "done" ? TaskDataState.AskedExecutorName : TaskDataState.AskingExecutorName;
+
             if (message != "done")
-            {
                 taskTemplate.Performers.AddLast(message);
-                await _botClient.SendMessage(
-                    chatId: Query.Message.Chat.Id,
-                    text: taskTemplate.ToString(),
-                    cancellationToken: CancellationToken);
-            }
 
             var task = taskTemplate.State switch
             {
@@ -222,13 +224,16 @@ namespace TelegaBotService
             await task;
         }
 
-        private async Task SendPerformersKeyboard(long Id, string Username, CancellationToken CancellationToken)
+        private async Task SendPerformersKeyboard(long UserId, string Username, CancellationToken CancellationToken)
         {
-            _taskHolder[Id].State = TaskDataState.AskingExecutorName;
+            _taskHolder[UserId].State = TaskDataState.AskingExecutorName;
+
+            await _messageManager.RemoveMessages(UserId, CancellationToken);
 
             await _botClient.SendMessage(
-                chatId: Id,
-                text: $"@{Username} Выберите исполнителей работ:",
+                chatId: UserId,
+                text: $"{(_taskHolder[UserId].Performers.Count > 0 ? string.Format($"{_taskHolder[UserId].GetPerformers()}\n\n") : string.Empty)}"+
+                $"@{Username} Выберите исполнителей работ:",
                 replyMarkup: Keyboard.GetKeyboard(KeyboardType.Performers),
                 cancellationToken: CancellationToken);
         }
@@ -238,18 +243,71 @@ namespace TelegaBotService
             var taskTemplate = _taskHolder[Query.From.Id];
             taskTemplate.State = TaskDataState.AskedExecutorName;
 
-            await _botClient.SendMessage(
-                chatId: Query.From.Id,
-                text: $"@{Query.From.Username}\n{taskTemplate}",
+            await _messageManager.RemoveMessages(Query.From.Id, CancellationToken);
+
+            var resultMessage = await _botClient.SendMessage(
+                chatId: Query.Message.Chat.Id,
+                text: $"{taskTemplate}",
                 cancellationToken: CancellationToken
                 );
+
+            await SaveDataToDbAndSendTaskDescription(Query, resultMessage.Id, CancellationToken);
         }
 
-        private async Task SaveDataToDbAndSendTaskDescription()
+        private async Task SaveDataToDbAndSendTaskDescription(CallbackQuery Query, int ignoredMessageId, CancellationToken CancellationToken)
         {
-            //_dbContext.Database.EnsureCreated();
-            //await _dbContext.Tasks.AddAsync(new());
-            //await _dbContext.SaveChangesAsync();
+            _messageManager.AddIgnoredMessageId(ignoredMessageId);
+            var taskTemplate = _taskHolder[Query.From.Id];
+
+            int savedData;
+            using (var scope = _serviceProvider.CreateScope())
+            {
+                var context = scope.ServiceProvider.GetRequiredService<TelegaBotDbContext>();
+
+                context.Database.EnsureCreated();
+                await context.Tasks.AddAsync(new()
+                {
+                    Id = Guid.NewGuid(),
+                    Date = DateTime.Parse(taskTemplate.Date),
+                    Type = taskTemplate.TaskType,
+                    Description = taskTemplate.TaskDescription,
+                    Location = taskTemplate.Location,
+                    Performers = taskTemplate.GetPerformers(),
+                }, CancellationToken);
+
+                savedData = await context.SaveChangesAsync(CancellationToken);
+            }
+
+            taskTemplate.State = TaskDataState.Done;
+
+            await SendSaveResultMessage(savedData, Query, CancellationToken);
+        }
+
+        private async Task SendSaveResultMessage(int SavedData, CallbackQuery Query, CancellationToken CancellationToken)
+        {
+            var handle = SavedData switch
+            {
+                0 => _botClient.SendMessage(
+                    chatId: Query.Message.Chat.Id,
+                    text: $"@{Query.From.Username} Данные не удалось сохранить, повторите попытку",
+                    cancellationToken: CancellationToken),
+
+                _ => _botClient.SendMessage(
+                    chatId: Query.Message.Chat.Id,
+                    text: $"@{Query.From.Username} Данные успешно сохранены",
+                    cancellationToken: CancellationToken)
+            };
+
+            var botMessage = await handle;
+            await _messageManager.AddMessageId(Query.From.Id, botMessage.Id);
+
+            await DeleteResultMessage(Query, CancellationToken);
+        }
+
+        private async Task DeleteResultMessage(CallbackQuery Query, CancellationToken CancellationToken)
+        {
+            await Task.Delay(5000);
+            await _messageManager.RemoveMessages(Query.From.Id, CancellationToken);
         }
 
         #endregion

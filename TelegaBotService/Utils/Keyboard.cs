@@ -62,7 +62,7 @@ namespace TelegaBotService.Utils
                     InlineKeyboardButton.WithCallbackData("Алабино", "Алабино")
                 ],
                 [
-                    InlineKeyboardButton.WithCallbackData("Свой вариант", "location")
+                    InlineKeyboardButton.WithCallbackData("Другой вариант", "location")
                 ]
             ]);
 

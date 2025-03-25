@@ -15,7 +15,8 @@ namespace TelegaBotService
         AskedTaskDescription,
         AskedLocation,
         AskingExecutorName,
-        AskedExecutorName
+        AskedExecutorName,
+        Done
     }
     public class TaskTemplate
     {
@@ -36,9 +37,9 @@ namespace TelegaBotService
                 $"\n{string.Join('\n', Performers)}");
         }
 
-        //public string GetPerformers()
-        //{
-        //    return string.Format($"Вы выбрали:\n{string.Join( "\n", Performers )}");
-        //}
+        public string GetPerformers()
+        {
+            return string.Format($"Вы выбрали:\n{string.Join("\n", Performers)}");
+        }
     }
 }
