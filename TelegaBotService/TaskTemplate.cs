@@ -7,17 +7,6 @@ using System.Threading.Tasks;
 
 namespace TelegaBotService
 {
-    public enum TaskDataState
-    {
-        None,
-        AskedDate,
-        AskedTaskType,
-        AskedTaskDescription,
-        AskedLocation,
-        AskingExecutorName,
-        AskedExecutorName,
-        Done
-    }
     public class TaskTemplate
     {
         public TaskDataState State { get; set; } = TaskDataState.None;
